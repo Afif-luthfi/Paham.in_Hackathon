@@ -1,7 +1,20 @@
-# Ngerti.in — UI redesign
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+</div>
 
-Reimplementation of the public Ngerti.in student mentoring interface, with an indigo theme, responsive navigation, class search, subject filters, class details, simulated enrollment, schedules, topic matching, and mentor class creation.
+# Run and deploy your AI Studio app
 
-Run `node server.cjs` and visit http://127.0.0.1:5173.
+This contains everything you need to run your app locally.
 
-All authored frontend source lives in `dist/` and needs no build. This is a frontend demo: accounts, payments, ratings, mentor verification, and classes are illustrative. Session state is held in memory and resets on refresh. No data is sent to the original website, and no real authentication or payment service is connected.
+View your app in AI Studio: https://ai.studio/apps/2bb963dd-0798-4a85-a83d-96c0df4ee32f
+
+## Run Locally
+
+**Prerequisites:**  Node.js
+
+
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`

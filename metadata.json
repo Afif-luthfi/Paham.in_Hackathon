@@ -1,0 +1,6 @@
+{
+  "name": "Paham.in",
+  "description": "Platform mentoring peer-to-peer mahasiswa dengan model patungan mikro-class.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
