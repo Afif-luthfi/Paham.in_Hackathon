@@ -1004,7 +1004,7 @@ export default function App() {
                       />
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">NIM Mahasiswa</label>
                         <input 
@@ -2427,7 +2427,7 @@ export default function App() {
                 {/* Payment channel selector */}
                 <div>
                   <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1.5">Pilih Rekening / Dompet Digital</label>
-                  <div className="grid grid-cols-2 gap-2.5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     {['GoPay', 'OVO', 'Dana', 'Bank BCA'].map((channel) => (
                       <button
                         type="button"
