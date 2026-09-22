@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-// Local storage database simulation without external Firebase connections
+import { supabase, unwrap, loadAccount, loadClasses, categoryIds } from './lib/supabase';
 import { 
   BookOpen, 
   Users, 
@@ -33,7 +33,8 @@ import {
   Shield,
   HelpCircle,
   Smartphone,
-  Menu
+  Menu,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -41,6 +42,7 @@ import { motion, AnimatePresence } from 'motion/react';
 // TYPES & INTERFACES
 // ============================================================================
 interface MentoringClass {
+  mentorId: string;
   id: string;
   title: string;
   mentorName: string;
@@ -78,6 +80,7 @@ const CATEGORIES = ['Semua', 'Teknik Informatika', 'Sistem Informasi', 'Kimia', 
 // MAIN COMPONENT
 // ============================================================================
 interface UserAccount {
+  id: string;
   nim: string;
   email: string;
   name: string;
@@ -125,104 +128,49 @@ export default function App() {
   const [googleRegNim, setGoogleRegNim] = useState('');
   const [googleRegMajor, setGoogleRegMajor] = useState('Teknik Informatika');
   
-  // ============================================================================
-  // LOCAL STORAGE PERSISTENCE ENGINE & INITIALIZATION
-  // ============================================================================
-  const DEFAULT_CLASSES: MentoringClass[] = [];
-
-  const syncClassesWithLocalState = (
-    classesList: MentoringClass[],
-    bookingsList: { nim: string; classId: string }[],
-    user: UserAccount | null
-  ) => {
-    if (!user) {
-      const updated = classesList.map(c => ({ ...c, isBooked: false }));
-      setMockClasses(updated);
+  const fetchClasses = async () => {
+    const classes = await loadClasses();
+    setMockClasses(classes);
+    setSelectedClass(previous => previous ? classes.find(c => c.id === previous.id) || null : null);
+  };
+  const refreshAccount = async () => {
+    const result = await loadAccount();
+    if (!result) return;
+    if (result.incomplete === true) {
+      const { data: { session } } = await supabase.auth.getSession();
+      setPendingGoogleUser({ uid: result.user.id, email: result.user.email || '',
+        name: result.user.user_metadata.full_name || result.user.user_metadata.name || 'Mahasiswa', token: session?.access_token || '' });
+      setShowGoogleRegisterModal(true);
       return;
     }
-
-    const userBookedIds = new Set(
-      bookingsList.filter(b => b.nim === user.nim).map(b => b.classId)
-    );
-
-    const updated = classesList.map(c => ({
-      ...c,
-      isBooked: userBookedIds.has(c.id)
-    }));
-    setMockClasses(updated);
+    const account = result.account;
+    setCurrentUser(account); setIsMentor(account.isMentor); setMentorEarnings(account.earnings);
+    setUserToken(account.id);
+    setActiveView(previous => previous === 'login' ? (account.isMentor ? 'mentor-dashboard' : 'mentee-dashboard') : previous);
+    await fetchClasses();
   };
-
   useEffect(() => {
-    // Clear any previous versions' dummy data to guarantee clean state
-    const currentVersion = 'paham_v1_clean_empty';
-    if (localStorage.getItem('paham_app_version') !== currentVersion) {
-      localStorage.clear();
-      localStorage.setItem('paham_app_version', currentVersion);
-    }
-
-    // 1. Initialize Users
-    const existingUsers = localStorage.getItem('paham_users');
-    let usersList: UserAccount[] = [];
-    if (!existingUsers) {
-      const defaultUsers: UserAccount[] = [];
-      localStorage.setItem('paham_users', JSON.stringify(defaultUsers));
-      usersList = defaultUsers;
-    } else {
-      usersList = JSON.parse(existingUsers);
-    }
-
-    // 2. Initialize Classes
-    const existingClasses = localStorage.getItem('paham_classes');
-    let classesList: MentoringClass[] = [];
-    if (!existingClasses) {
-      localStorage.setItem('paham_classes', JSON.stringify(DEFAULT_CLASSES));
-      classesList = [...DEFAULT_CLASSES];
-    } else {
-      classesList = JSON.parse(existingClasses);
-    }
-
-    // 3. Initialize Bookings
-    const existingBookings = localStorage.getItem('paham_bookings');
-    let bookingsList: { nim: string; classId: string }[] = [];
-    if (!existingBookings) {
-      const defaultBookings: { nim: string; classId: string }[] = [];
-      localStorage.setItem('paham_bookings', JSON.stringify(defaultBookings));
-      bookingsList = defaultBookings;
-    } else {
-      bookingsList = JSON.parse(existingBookings);
-    }
-
-    // 4. Set current user session
-    const storedUser = localStorage.getItem('paham_current_user');
-    if (storedUser) {
-      const parsedUser = JSON.parse(storedUser);
-      const latestUser = usersList.find(u => u.nim === parsedUser.nim || u.email === parsedUser.email);
-      if (latestUser) {
-        setCurrentUser(latestUser);
-        setIsMentor(latestUser.isMentor);
-        setMentorEarnings(latestUser.earnings);
-        setUserToken(`local-session-${latestUser.nim}`);
-        setActiveView(latestUser.isMentor ? 'mentor-dashboard' : 'mentee-dashboard');
-        syncClassesWithLocalState(classesList, bookingsList, latestUser);
-        return;
-      }
-    }
-
-    syncClassesWithLocalState(classesList, bookingsList, null);
+    let mounted = true;
+    const refresh = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!mounted) return;
+        if (session) await refreshAccount(); else await fetchClasses();
+      } catch (error) { if (mounted) addToast('error','Koneksi Database',error instanceof Error ? error.message : 'Gagal memuat data'); }
+    };
+    void refresh();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_IN') setTimeout(() => { if (mounted) void refresh(); }, 0);
+    });
+    window.addEventListener('focus',refresh);
+    return () => { mounted = false; subscription.unsubscribe(); window.removeEventListener('focus',refresh); };
   }, []);
-
-  const fetchClasses = async () => {
-    // Legacy support, we fetch directly from localStorage instead of endpoint
-    const classesList = JSON.parse(localStorage.getItem('paham_classes') || '[]');
-    const bookingsList = JSON.parse(localStorage.getItem('paham_bookings') || '[]');
-    syncClassesWithLocalState(classesList, bookingsList, currentUser);
-  };
 
   // Mentor Verification States
   const [selectedVerificationSubject, setSelectedVerificationSubject] = useState('Teknik Informatika');
   const [gpaValue, setGpaValue] = useState('3.85');
   const [contactInfo, setContactInfo] = useState('+62 812-3456-7890');
-  const [uploadedFile, setUploadedFile] = useState<{ name: string; size: string } | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<{ name: string; size: string; file: File } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   
   // Modals / Dialog States
@@ -230,6 +178,8 @@ export default function App() {
   const [isCreateClassOpen, setIsCreateClassOpen] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('150000');
   const [withdrawChannel, setWithdrawChannel] = useState('GoPay');
+  const [withdrawDestination, setWithdrawDestination] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState<boolean>(false);
   
   // Create Class States
@@ -268,7 +218,7 @@ export default function App() {
   const statistics = useMemo(() => {
     const joinedClassesCount = mockClasses.filter(c => c.isBooked).length;
     const activeClassesForMentor = currentUser 
-      ? mockClasses.filter(c => c.mentorName === currentUser.name).length 
+      ? mockClasses.filter(c => c.mentorId === currentUser.id).length
       : 0;
     return {
       joinedCount: joinedClassesCount,
@@ -280,190 +230,40 @@ export default function App() {
   // ============================================================================
   // HANDLERS & SIMULATIONS
   // ============================================================================
-  const handleGoogleSignIn = () => {
-    addToast('info', 'Google Sign-In', 'Menghubungkan ke Google...');
-    setTimeout(() => {
-      const dummyGoogleUser = {
-        uid: "google_" + Math.random().toString(36).substring(2, 9),
-        email: "student.google@univ.ac.id",
-        name: "Google Student Account",
-        token: "google-token-simulated"
-      };
-      
-      const usersList: UserAccount[] = JSON.parse(localStorage.getItem('paham_users') || '[]');
-      const existingUser = usersList.find(u => u.email.toLowerCase() === dummyGoogleUser.email.toLowerCase());
-      
-      if (existingUser) {
-        localStorage.setItem('paham_current_user', JSON.stringify(existingUser));
-        setCurrentUser(existingUser);
-        setIsMentor(existingUser.isMentor);
-        setMentorEarnings(existingUser.earnings || 0);
-        setUserToken(`local-session-${existingUser.nim}`);
-
-        const bookingsList = JSON.parse(localStorage.getItem('paham_bookings') || '[]');
-        const classesList = JSON.parse(localStorage.getItem('paham_classes') || '[]');
-        syncClassesWithLocalState(classesList, bookingsList, existingUser);
-
-        addToast('success', 'Selamat Datang Kembali!', `Berhasil masuk dengan akun Google: ${existingUser.name}`);
-        setActiveView(existingUser.isMentor ? 'mentor-dashboard' : 'mentee-dashboard');
-      } else {
-        setPendingGoogleUser(dummyGoogleUser);
-        setShowGoogleRegisterModal(true);
-        addToast('success', 'Google Terhubung', 'Silakan lengkapi NIM dan Program Studi Anda.');
-      }
-    }, 800);
+  const showError = (error: unknown) => addToast('error','Tidak berhasil',error instanceof Error ? error.message : 'Terjadi kesalahan. Coba lagi.');
+  const handleGoogleSignIn = async () => {
+    try { unwrap(await supabase.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin}})); }
+    catch (error) { showError(error); }
   };
-
-  const handleDemoSignIn = (role: 'mentee' | 'mentor') => {
-    const nim = role === 'mentee' ? '240601' : '120305';
-    const usersList: UserAccount[] = JSON.parse(localStorage.getItem('paham_users') || '[]');
-    const user = usersList.find(u => u.nim === nim);
-
-    if (user) {
-      localStorage.setItem('paham_current_user', JSON.stringify(user));
-      setCurrentUser(user);
-      setIsMentor(user.isMentor);
-      setMentorEarnings(user.earnings || 0);
-      setUserToken(`local-session-${user.nim}`);
-
-      const bookingsList = JSON.parse(localStorage.getItem('paham_bookings') || '[]');
-      const classesList = JSON.parse(localStorage.getItem('paham_classes') || '[]');
-      syncClassesWithLocalState(classesList, bookingsList, user);
-
-      addToast('success', 'Masuk Sukses!', `Berhasil masuk dalam mode Demo sebagai ${user.name}.`);
-      setActiveView(user.isMentor ? 'mentor-dashboard' : 'mentee-dashboard');
-    } else {
-      addToast('error', 'Demo Gagal', 'Data demo tidak ditemukan. Silakan refresh halaman.');
-    }
+  const handleDemoSignIn = () => addToast('info','Gunakan Akun Anda','Silakan daftar atau masuk menggunakan email.');
+  const handleGoogleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault(); if (!pendingGoogleUser || isSaving) return; setIsSaving(true);
+    try {
+      unwrap(await supabase.from('profiles').insert({id:pendingGoogleUser.uid,nim:googleRegNim.trim(),name:pendingGoogleUser.name,major:categoryIds[googleRegMajor]}));
+      setShowGoogleRegisterModal(false); setPendingGoogleUser(null); await refreshAccount();
+    } catch (error) { showError(error); } finally { setIsSaving(false); }
   };
-
-  const handleGoogleRegisterSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!googleRegNim || !googleRegMajor || !pendingGoogleUser) {
-      addToast('error', 'Registrasi Gagal', 'Harap masukkan NIM dan Program Studi Anda.');
-      return;
-    }
-
-    const usersList: UserAccount[] = JSON.parse(localStorage.getItem('paham_users') || '[]');
-    const isNimTaken = usersList.some(u => u.nim === googleRegNim);
-    if (isNimTaken) {
-      addToast('error', 'Registrasi Gagal', 'NIM sudah terdaftar.');
-      return;
-    }
-
-    const newUser: UserAccount = {
-      name: pendingGoogleUser.name,
-      nim: googleRegNim,
-      email: pendingGoogleUser.email,
-      password: 'google_linked_account',
-      major: googleRegMajor,
-      isMentor: false,
-      earnings: 0
-    };
-
-    const updatedUsers = [...usersList, newUser];
-    localStorage.setItem('paham_users', JSON.stringify(updatedUsers));
-    localStorage.setItem('paham_current_user', JSON.stringify(newUser));
-
-    setCurrentUser(newUser);
-    setIsMentor(false);
-    setMentorEarnings(0);
-    setUserToken(`local-session-${newUser.nim}`);
-    setPendingGoogleUser(null);
-    setShowGoogleRegisterModal(false);
-
-    const bookingsList = JSON.parse(localStorage.getItem('paham_bookings') || '[]');
-    const classesList = JSON.parse(localStorage.getItem('paham_classes') || '[]');
-    syncClassesWithLocalState(classesList, bookingsList, newUser);
-
-    addToast('success', 'Registrasi Berhasil!', 'Akun Google Anda berhasil dikaitkan.');
-    setActiveView('mentee-dashboard');
+  const handleCancelGoogleRegister = async () => {
+    try { unwrap(await supabase.auth.signOut()); setPendingGoogleUser(null); setShowGoogleRegisterModal(false); }
+    catch (error) { showError(error); }
   };
-
-  const handleCancelGoogleRegister = () => {
-    setPendingGoogleUser(null);
-    setShowGoogleRegisterModal(false);
-    addToast('info', 'Registrasi Dibatalkan', 'Proses masuk Google dibatalkan.');
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault(); if (isSaving) return; setIsSaving(true);
+    try {
+      if (!loginIdentifier.includes('@')) throw new Error('Gunakan email terdaftar untuk masuk. NIM disimpan di profil mahasiswa.');
+      unwrap(await supabase.auth.signInWithPassword({email:loginIdentifier.trim(),password:loginPassword}));
+      await refreshAccount(); setLoginPassword('');
+    } catch (error) { showError(error); } finally { setIsSaving(false); }
   };
-
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!loginIdentifier || !loginPassword) {
-      addToast('error', 'Login Gagal', 'Harap isi NIM / Email dan Kata Sandi Anda.');
-      return;
-    }
-
-    const usersList: UserAccount[] = JSON.parse(localStorage.getItem('paham_users') || '[]');
-    const user = usersList.find(
-      u => (u.nim === loginIdentifier || u.email.toLowerCase() === loginIdentifier.toLowerCase()) && 
-           u.password === loginPassword
-    );
-
-    if (!user) {
-      addToast('error', 'Login Gagal', 'Kombinasi NIM/Email atau Kata Sandi salah.');
-      return;
-    }
-
-    localStorage.setItem('paham_current_user', JSON.stringify(user));
-    setCurrentUser(user);
-    setIsMentor(user.isMentor);
-    setMentorEarnings(user.earnings || 0);
-    setUserToken(`local-session-${user.nim}`);
-
-    const bookingsList = JSON.parse(localStorage.getItem('paham_bookings') || '[]');
-    const classesList = JSON.parse(localStorage.getItem('paham_classes') || '[]');
-    syncClassesWithLocalState(classesList, bookingsList, user);
-
-    addToast('success', 'Selamat Datang Kembali!', `Halo ${user.name}, Anda berhasil masuk.`);
-    setActiveView(user.isMentor ? 'mentor-dashboard' : 'mentee-dashboard');
-  };
-
-  const handleRegister = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!regName || !regNim || !regEmail || !regPassword || !regMajor) {
-      addToast('error', 'Registrasi Gagal', 'Harap lengkapi seluruh bidang pendaftaran.');
-      return;
-    }
-
-    const usersList: UserAccount[] = JSON.parse(localStorage.getItem('paham_users') || '[]');
-    const isNimTaken = usersList.some(u => u.nim === regNim);
-    const isEmailTaken = usersList.some(u => u.email.toLowerCase() === regEmail.toLowerCase());
-
-    if (isNimTaken) {
-      addToast('error', 'Registrasi Gagal', 'NIM sudah terdaftar.');
-      return;
-    }
-    if (isEmailTaken) {
-      addToast('error', 'Registrasi Gagal', 'Email sudah terdaftar.');
-      return;
-    }
-
-    const newUser: UserAccount = {
-      name: regName,
-      nim: regNim,
-      email: regEmail,
-      password: regPassword,
-      major: regMajor,
-      isMentor: false,
-      earnings: 0
-    };
-
-    const updatedUsers = [...usersList, newUser];
-    localStorage.setItem('paham_users', JSON.stringify(updatedUsers));
-    localStorage.setItem('paham_current_user', JSON.stringify(newUser));
-
-    setCurrentUser(newUser);
-    setIsMentor(false);
-    setMentorEarnings(0);
-    setUserToken(`local-session-${newUser.nim}`);
-
-    const bookingsList = JSON.parse(localStorage.getItem('paham_bookings') || '[]');
-    const classesList = JSON.parse(localStorage.getItem('paham_classes') || '[]');
-    syncClassesWithLocalState(classesList, bookingsList, newUser);
-
-    addToast('success', 'Registrasi Berhasil!', 'Akun Anda berhasil didaftarkan.');
-    setIsRegisterMode(false);
-    setActiveView('mentee-dashboard');
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault(); if (isSaving) return; setIsSaving(true);
+    try {
+      const result = unwrap(await supabase.auth.signUp({email:regEmail.trim(),password:regPassword,
+        options:{data:{nim:regNim.trim(),name:regName.trim(),major:categoryIds[regMajor]},emailRedirectTo:window.location.origin}}));
+      setRegPassword(''); setIsRegisterMode(false);
+      if (result.session) await refreshAccount();
+      else addToast('success','Periksa Email','Buka tautan konfirmasi email sebelum masuk.');
+    } catch (error) { showError(error); } finally { setIsSaving(false); }
   };
 
   const handleToggleMentorMode = () => {
@@ -497,198 +297,77 @@ export default function App() {
     }
   };
 
-  const handleConfirmPayment = () => {
-    if (!selectedClass || !currentUser) return;
-
-    const bookingsList: { nim: string; classId: string }[] = JSON.parse(localStorage.getItem('paham_bookings') || '[]');
-    const isAlreadyBooked = bookingsList.some(b => b.nim === currentUser.nim && b.classId === selectedClass.id);
-
-    if (isAlreadyBooked) {
-      addToast('info', 'Sudah Bergabung', 'Anda sudah bergabung dalam kelas ini.');
-      setShowPaymentModal(false);
-      setSelectedClass(null);
-      return;
-    }
-
-    const updatedBookings = [...bookingsList, { nim: currentUser.nim, classId: selectedClass.id }];
-    localStorage.setItem('paham_bookings', JSON.stringify(updatedBookings));
-
-    const classesList: MentoringClass[] = JSON.parse(localStorage.getItem('paham_classes') || '[]');
-    const targetCls = classesList.find(c => c.id === selectedClass.id);
-    if (targetCls) {
-      targetCls.currentQuota = Math.min(targetCls.maxQuota, targetCls.currentQuota + 1);
-      
-      const usersList: UserAccount[] = JSON.parse(localStorage.getItem('paham_users') || '[]');
-      const mentorUser = usersList.find(u => u.name === targetCls.mentorName);
-      if (mentorUser) {
-        mentorUser.earnings = (mentorUser.earnings || 0) + 5000;
-        localStorage.setItem('paham_users', JSON.stringify(usersList));
-        
-        if (currentUser.nim === mentorUser.nim) {
-          currentUser.earnings = mentorUser.earnings;
-          localStorage.setItem('paham_current_user', JSON.stringify(currentUser));
-          setMentorEarnings(mentorUser.earnings);
-        }
-      }
-    }
-    localStorage.setItem('paham_classes', JSON.stringify(classesList));
-
-    syncClassesWithLocalState(classesList, updatedBookings, currentUser);
-    setShowPaymentModal(false);
-    setSelectedClass(null);
-
-    addToast('success', 'Pembayaran Terkonfirmasi', `Selamat! Anda berhasil bergabung dalam kelas "${selectedClass.title}".`);
-    setActiveView('mentee-dashboard');
+  const downloadMaterial = async (classId: string, title: string) => {
+    try {
+      const rows = unwrap(await supabase.from('class_materials').select('external_url,storage_path').eq('class_id',classId).eq('title',title).limit(1));
+      const material = rows?.[0];
+      if (!material) throw new Error('Materi tidak tersedia untuk akun ini.');
+      if (material.storage_path) {
+        const file = unwrap(await supabase.storage.from('class-materials').download(material.storage_path));
+        const url = URL.createObjectURL(file); const link = document.createElement('a');
+        link.href = url; link.download = material.storage_path.split('/').pop() || title; link.click();
+        setTimeout(() => URL.revokeObjectURL(url),1000);
+      } else if (material.external_url) window.open(material.external_url,'_blank','noopener,noreferrer');
+      else throw new Error('Berkas materi belum diunggah oleh mentor.');
+    } catch(error) { showError(error); }
   };
-
-  const handleFileDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      setUploadedFile({
-        name: file.name,
-        size: (file.size / (1024 * 1024)).toFixed(2) + ' MB'
-      });
-      addToast('success', 'Berkas Diupload', `Berhasil memilih ${file.name}`);
-    }
+  const handleConfirmPayment = async () => {
+    if (!selectedClass || !currentUser || isSaving) return; setIsSaving(true);
+    try {
+      const bookingId = unwrap(await supabase.rpc('reserve_class',{p_class_id:selectedClass.id}));
+      const booking = unwrap(await supabase.from('bookings').select('status').eq('id',bookingId).single());
+      if (booking.status === 'cancelled') throw new Error('Pendaftaran sebelumnya telah dibatalkan. Hubungi pengelola untuk mendaftar ulang.');
+      await fetchClasses(); setShowPaymentModal(false);
+      addToast('info','Pendaftaran Tersimpan','Pembayaran masih menunggu verifikasi. Akses kelas terbuka setelah pembayaran dikonfirmasi oleh pengelola.');
+    } catch (error) { showError(error); } finally { setIsSaving(false); }
   };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setUploadedFile({
-        name: file.name,
-        size: (file.size / (1024 * 1024)).toFixed(2) + ' MB'
-      });
-      addToast('success', 'Berkas Diupload', `Berhasil memilih ${file.name}`);
+  const selectTranscript = (file?: File) => {
+    if (!file) return;
+    if (!['application/pdf','image/jpeg','image/png'].includes(file.type) || file.size > 10*1024*1024 || !file.size) {
+      addToast('error','Berkas Tidak Valid','Gunakan PDF, JPG, atau PNG berukuran maksimal 10 MB.'); return;
     }
+    setUploadedFile({name:file.name,size:(file.size/1024/1024).toFixed(2)+' MB',file});
   };
-
-  const simulateVerificationSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!uploadedFile || !currentUser) {
-      addToast('error', 'Unggah Transkrip', 'Anda harus melampirkan file transkrip nilai KHS.');
-      return;
-    }
-
-    const usersList: UserAccount[] = JSON.parse(localStorage.getItem('paham_users') || '[]');
-    const user = usersList.find(u => u.nim === currentUser.nim);
-    if (user) {
-      user.isMentor = true;
-      localStorage.setItem('paham_users', JSON.stringify(usersList));
-      
-      currentUser.isMentor = true;
-      localStorage.setItem('paham_current_user', JSON.stringify(currentUser));
-      
-      setIsMentor(true);
-      setMentorEarnings(currentUser.earnings || 0);
-
-      addToast('success', 'Verifikasi Berhasil!', 'Selamat! Anda sekarang resmi menjadi Mentor di Paham.in');
-      
-      const bookingsList = JSON.parse(localStorage.getItem('paham_bookings') || '[]');
-      const classesList = JSON.parse(localStorage.getItem('paham_classes') || '[]');
-      syncClassesWithLocalState(classesList, bookingsList, currentUser);
-      
-      setActiveView('mentor-dashboard');
-    } else {
-      addToast('error', 'Verifikasi Gagal', 'Sesi pengguna tidak valid.');
-    }
+  const handleFileDrop = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); selectTranscript(e.dataTransfer.files[0]); };
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => selectTranscript(e.target.files?.[0]);
+  const handleVerificationSubmit = async (e: React.FormEvent) => {
+    e.preventDefault(); if (!currentUser || isSaving) return;
+    if (!uploadedFile) { addToast('error','Unggah Transkrip','Pilih transkrip terlebih dahulu.'); return; }
+    setIsSaving(true);
+    try {
+      const path = currentUser.id+'/'+crypto.randomUUID()+'/'+uploadedFile.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+      unwrap(await supabase.storage.from('mentor-transcripts').upload(path,uploadedFile.file));
+      unwrap(await supabase.from('mentor_verifications').insert({user_id:currentUser.id,category_id:categoryIds[selectedVerificationSubject],
+        gpa:Number(gpaValue),contact:contactInfo.trim(),transcript_path:path,file_name:uploadedFile.name,file_size:uploadedFile.file.size}));
+      setUploadedFile(null); setActiveView('mentee-dashboard');
+      addToast('success','Pengajuan Tersimpan','Transkrip dan data mentor menunggu pemeriksaan pengelola.');
+    } catch (error) { showError(error); } finally { setIsSaving(false); }
   };
-
-  const handleCreateClass = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newClassTitle || !newClassDescription || !newClassDateTime || !newClassLink) {
-      addToast('error', 'Data Belum Lengkap', 'Silakan lengkapi semua bidang isian formulir kelas baru termasuk link kelas.');
-      return;
-    }
-    if (!currentUser) return;
-
-    const newClass: MentoringClass = {
-      id: `class-custom-${Date.now()}`,
-      title: newClassTitle,
-      mentorName: currentUser.name,
-      mentorAvatar: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(currentUser.name)}`,
-      mentorMajor: `${currentUser.major || 'S1 Informatika'} - Terverifikasi`,
-      mentorRating: 5.0,
-      price: 5000,
-      currentQuota: 0,
-      maxQuota: 10,
-      category: newClassCategory,
-      description: newClassDescription,
-      dateTime: newClassDateTime,
-      duration: newClassDuration,
-      location: newClassLink.toLowerCase().includes('meet.google.com') 
-        ? 'Google Meet' 
-        : newClassLink.toLowerCase().includes('whatsapp.com') 
-          ? 'Grup WhatsApp' 
-          : 'Daring (Link Kustom)',
-      classLink: newClassLink,
-      materials: ['Slide Materi Buatan Mentor', 'Latihan Mandiri Quiz']
-    };
-
-    const classesList: MentoringClass[] = JSON.parse(localStorage.getItem('paham_classes') || '[]');
-    const updatedClasses = [newClass, ...classesList];
-    localStorage.setItem('paham_classes', JSON.stringify(updatedClasses));
-
-    const bookingsList = JSON.parse(localStorage.getItem('paham_bookings') || '[]');
-    syncClassesWithLocalState(updatedClasses, bookingsList, currentUser);
-
-    addToast('success', 'Kelas Berhasil Dibuat!', `Kelas "${newClassTitle}" siap menampung patungan mahasiswa.`);
-    setIsCreateClassOpen(false);
-    
-    setNewClassTitle('');
-    setNewClassDescription('');
-    setNewClassDateTime('');
-    setNewClassLink('');
+  const handleCreateClass = async (e: React.FormEvent) => {
+    e.preventDefault(); if (!currentUser || isSaving) return; setIsSaving(true);
+    try {
+      unwrap(await supabase.rpc('create_class',{p_title:newClassTitle.trim(),p_category:categoryIds[newClassCategory],p_description:newClassDescription.trim(),
+        p_starts_at:new Date(newClassDateTime).toISOString(),p_duration:parseInt(newClassDuration,10),
+        p_location:newClassLink.includes('meet.google.com') ? 'Google Meet' : newClassLink.includes('whatsapp.com') ? 'Grup WhatsApp' : 'Daring',p_url:newClassLink.trim()}));
+      await fetchClasses(); setIsCreateClassOpen(false); setNewClassTitle('');setNewClassDescription('');setNewClassDateTime('');setNewClassLink('');
+      addToast('success','Kelas Tersimpan','Kelas telah dipublikasikan.');
+    } catch (error) { showError(error); } finally { setIsSaving(false); }
   };
-
-  const handleWithdrawFunds = (e: React.FormEvent) => {
-    e.preventDefault();
-    const amount = parseInt(withdrawAmount, 10);
-    if (isNaN(amount) || amount <= 0) {
-      addToast('error', 'Nominal Salah', 'Harap masukkan nominal dana yang valid.');
-      return;
-    }
-    if (amount > mentorEarnings) {
-      addToast('error', 'Dana Tidak Cukup', 'Saldo pendapatan Anda tidak mencukupi untuk penarikan ini.');
-      return;
-    }
-    if (!currentUser) return;
-
-    const usersList: UserAccount[] = JSON.parse(localStorage.getItem('paham_users') || '[]');
-    const user = usersList.find(u => u.nim === currentUser.nim);
-    if (user) {
-      user.earnings = (user.earnings || 0) - amount;
-      localStorage.setItem('paham_users', JSON.stringify(usersList));
-
-      currentUser.earnings = user.earnings;
-      localStorage.setItem('paham_current_user', JSON.stringify(currentUser));
-      setMentorEarnings(user.earnings);
-
-      addToast('success', 'Penarikan Diproses', `Dana Rp ${amount.toLocaleString('id-ID')} berhasil ditarik ke ${withdrawChannel}. Proses kirim maksimal 1x24 jam.`);
-      setIsWithdrawOpen(false);
-    } else {
-      addToast('error', 'Penarikan Gagal', 'Sesi pengguna tidak valid.');
-    }
+  const handleWithdrawFunds = async (e: React.FormEvent) => {
+    e.preventDefault(); if (!currentUser || isSaving) return; setIsSaving(true);
+    try {
+      const amount = Number(withdrawAmount);
+      if (!Number.isSafeInteger(amount) || amount<=0) throw new Error('Nominal penarikan harus berupa bilangan bulat positif.');
+      unwrap(await supabase.rpc('request_withdrawal',{p_amount:amount,p_channel:withdrawChannel,p_destination:withdrawDestination.trim()}));
+      await refreshAccount();setIsWithdrawOpen(false);
+      addToast('success','Pengajuan Penarikan Tersimpan','Permintaan menunggu pemrosesan pengelola.');
+    } catch (error) { showError(error); } finally { setIsSaving(false); }
   };
-
-  const handleLogoutAction = () => {
-    localStorage.removeItem('paham_current_user');
-    setCurrentUser(null);
-    setIsMentor(false);
-    setUploadedFile(null);
-    setSearchQuery('');
-    setCategoryFilter('Semua');
-    setMentorEarnings(0);
-    setUserToken(null);
-
-    const classesList = JSON.parse(localStorage.getItem('paham_classes') || '[]');
-    const bookingsList = JSON.parse(localStorage.getItem('paham_bookings') || '[]');
-    syncClassesWithLocalState(classesList, bookingsList, null);
-
-    addToast('info', 'Sesi Berakhir', 'Anda telah berhasil keluar dari akun Paham.in');
-    setActiveView('login');
+  const handleLogoutAction = async () => {
+    try {
+      unwrap(await supabase.auth.signOut());setCurrentUser(null);setIsMentor(false);setMentorEarnings(0);setUserToken(null);
+      setUploadedFile(null);setSelectedClass(null);setActiveView('login');setSearchQuery('');setCategoryFilter('Semua');await fetchClasses();
+    } catch (error) { showError(error); }
   };
 
   // ============================================================================
@@ -793,7 +472,7 @@ export default function App() {
                   Batal
                 </button>
                 <button 
-                  type="submit" 
+                  type="submit" disabled={isSaving}
                   className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow-lg hover:shadow-blue-500/20 text-sm transition-all cursor-pointer text-center"
                 >
                   Selesaikan
@@ -898,18 +577,18 @@ export default function App() {
                 <div className="space-y-6">
                   <div>
                     <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Masuk untuk belajar bareng</h2>
-                    <p className="text-gray-500 text-sm mt-1">Gunakan NIM atau email kampus untuk melanjutkan.</p>
+                    <p className="text-gray-500 text-sm mt-1">Gunakan email terdaftar untuk melanjutkan.</p>
                   </div>
 
                   <form onSubmit={handleLogin} className="space-y-5">
                     <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">NIM / Email Kampus</label>
+                      <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">Email Kampus</label>
                       <div className="relative">
                         <input 
                           type="text" 
                           value={loginIdentifier}
                           onChange={(e) => setLoginIdentifier(e.target.value)}
-                          placeholder="Masukkan NIM atau email@university.edu"
+                          placeholder="email@university.edu"
                           className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3.5 pl-11 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-gray-800"
                         />
                         <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">
@@ -942,7 +621,7 @@ export default function App() {
                     </div>
 
                     <button 
-                      type="submit"
+                      type="submit" disabled={isSaving}
                       id="btn-masuk"
                       className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-lg hover:shadow-blue-500/20 transform hover:-translate-y-0.5 active:translate-y-0 transition-all text-sm flex items-center justify-center gap-2 cursor-pointer font-sans"
                     >
@@ -1059,7 +738,7 @@ export default function App() {
                     </div>
 
                     <button 
-                      type="submit"
+                      type="submit" disabled={isSaving}
                       className="w-full bg-orange-500 hover:bg-orange-400 text-neutral-900 font-bold py-3.5 rounded-xl shadow-lg hover:shadow-orange-500/20 transform hover:-translate-y-0.5 active:translate-y-0 transition-all text-sm flex items-center justify-center gap-2 cursor-pointer font-sans"
                     >
                       <span>Daftar</span>
@@ -1484,7 +1163,7 @@ export default function App() {
 
                                   <div className="flex items-center gap-1 bg-yellow-50 text-yellow-700 text-xs px-2 py-0.5 rounded-lg font-bold">
                                     <span>★</span>
-                                    <span>{item.mentorRating}</span>
+                                    <span>{item.mentorRating || "Baru"}</span>
                                   </div>
                                 </div>
 
@@ -1586,7 +1265,7 @@ export default function App() {
                           </span>
                           <div className="flex items-center gap-1 bg-yellow-50 text-yellow-700 text-xs px-2.5 py-0.5 rounded-lg font-bold">
                             <span>★</span>
-                            <span>{selectedClass.mentorRating}</span>
+                            <span>{selectedClass.mentorRating || "Baru"}</span>
                           </div>
                         </div>
 
@@ -1663,13 +1342,22 @@ export default function App() {
                         
                         <ul className="space-y-2.5">
                           {selectedClass.materials.map((mat, i) => (
-                            <li key={i} className="flex items-start gap-3 text-xs text-gray-600 bg-gray-50/50 p-3 rounded-xl border border-gray-100">
-                              <div className="p-1 bg-blue-100 text-blue-700 rounded-md mt-0.5 shrink-0 font-bold">
-                                {i + 1}
+                            <li
+                              key={i}
+                              onClick={() => void downloadMaterial(selectedClass.id, mat)}
+                              className="flex items-center justify-between gap-3 text-xs text-gray-600 bg-gray-50 hover:bg-blue-50/50 p-3 rounded-xl border border-gray-100 hover:border-blue-200 transition-all group cursor-pointer"
+                            >
+                              <div className="flex items-start gap-3">
+                                <div className="p-1.5 bg-blue-100 group-hover:bg-blue-600 text-blue-700 group-hover:text-white transition-colors rounded-md shrink-0 font-bold min-w-[28px] text-center">
+                                  {i + 1}
+                                </div>
+                                <div className="space-y-0.5">
+                                  <span className="font-bold text-gray-800 block group-hover:text-blue-700 transition-colors">{mat}</span>
+                                  <span className="text-gray-400 text-[10px]">Tersedia dalam format unduhan digital</span>
+                                </div>
                               </div>
-                              <div className="space-y-0.5">
-                                <span className="font-bold text-gray-800 block">{mat}</span>
-                                <span className="text-gray-400 text-[10px]">Tersedia dalam format unduhan digital</span>
+                              <div className="p-2 text-gray-400 group-hover:text-blue-600 group-hover:bg-blue-50 bg-white rounded-lg border border-gray-100 shadow-sm transition-all">
+                                <Download className="w-4 h-4" />
                               </div>
                             </li>
                           ))}
@@ -1704,13 +1392,13 @@ export default function App() {
                           </div>
 
                           <p className="text-[10px] text-gray-400 leading-tight">
-                            *Kelas akan dijalankan otomatis begitu mencapai kuota minimal. Jika dibatalkan, dana patungan Anda dijamin kembali 100%.
+                            *Kuota mencakup reservasi yang menunggu pembayaran. Hubungi pengelola untuk pembatalan atau permintaan pengembalian dana.
                           </p>
                         </div>
 
                         {/* List of joined avatars simulator */}
                         <div>
-                          <span className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">MAHASISWA BERGABUNG</span>
+                          <span className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">KUOTA DIPESAN</span>
                           <div className="flex items-center gap-1.5 flex-wrap">
                             {Array.from({ length: selectedClass.currentQuota }).map((_, idx) => (
                               <img 
@@ -1740,7 +1428,7 @@ export default function App() {
                               <span>Anda Sudah Terdaftar di Kelas Ini</span>
                             </div>
                             <a
-                              href={selectedClass.classLink || 'https://meet.google.com/xyz-pdq-abc'}
+                              href={selectedClass.classLink}
                               target="_blank"
                               rel="noreferrer"
                               onClick={() => {
@@ -1827,7 +1515,7 @@ export default function App() {
                     </div>
 
                     {/* Verification Form */}
-                    <form onSubmit={simulateVerificationSubmit} className="space-y-6">
+                    <form onSubmit={handleVerificationSubmit} className="space-y-6">
                       
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         
@@ -1943,7 +1631,7 @@ export default function App() {
                       {/* Submit Actions */}
                       <div className="pt-2">
                         <button 
-                          type="submit"
+                          type="submit" disabled={isSaving}
                           id="btn-kirim-verifikasi"
                           className="w-full bg-orange-500 hover:bg-orange-400 text-neutral-900 font-bold py-3.5 rounded-xl shadow-lg hover:shadow-orange-500/20 transform hover:-translate-y-0.5 transition-all text-sm flex items-center justify-center gap-2 cursor-pointer"
                         >
@@ -2055,7 +1743,7 @@ export default function App() {
                       </button>
                     </div>
 
-                    {mockClasses.filter(c => c.mentorName === (currentUser?.name || '')).length === 0 ? (
+                    {mockClasses.filter(c => c.mentorId === currentUser?.id).length === 0 ? (
                       <div className="bg-white border border-gray-200 rounded-2xl p-10 text-center max-w-xl mx-auto my-6">
                         <p className="text-sm text-gray-500">Anda belum membuat kelas mengajar pertamamu.</p>
                         <button 
@@ -2067,7 +1755,7 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {mockClasses.filter(c => c.mentorName === (currentUser?.name || '')).map((myClass) => {
+                        {mockClasses.filter(c => c.mentorId === currentUser?.id).map((myClass) => {
                           const quotaPercent = (myClass.currentQuota / myClass.maxQuota) * 100;
                           const currentEarnings = myClass.currentQuota * 5000;
                           
@@ -2115,8 +1803,8 @@ export default function App() {
                               <div className="flex items-center gap-2 pt-2">
                                 <button
                                   onClick={() => {
-                                    // Start class link simulation
-                                    addToast('info', 'Mulai Google Meet', 'Tautan Google Meet baru dibuka di tab terpisah. Pastikan mic dan kamera aktif!');
+                                    if (myClass.classLink) window.open(myClass.classLink, '_blank', 'noopener,noreferrer');
+                                    else addToast('error','Tautan Belum Tersedia','Tautan kelas belum dapat diakses.');
                                   }}
                                   className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer"
                                 >
@@ -2206,7 +1894,7 @@ export default function App() {
 
                               <div className="flex items-center gap-3">
                                 <a
-                                  href={joinedClass.classLink || 'https://meet.google.com/xyz-pdq-abc'}
+                                  href={joinedClass.classLink}
                                   target="_blank"
                                   rel="noreferrer"
                                   onClick={() => {
@@ -2276,7 +1964,7 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="space-y-4">
-                          {mockClasses.filter(c => c.mentorName === (currentUser?.name || '')).map((myClass) => (
+                          {mockClasses.filter(c => c.mentorId === currentUser?.id).map((myClass) => (
                             <div 
                               key={myClass.id}
                               className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm space-y-4 relative overflow-hidden"
@@ -2306,7 +1994,7 @@ export default function App() {
 
                               <div className="flex items-center gap-3">
                                 <a
-                                  href={myClass.classLink || 'https://meet.google.com/xyz-pdq-abc'}
+                                  href={myClass.classLink}
                                   target="_blank"
                                   rel="noreferrer"
                                   onClick={() => {
@@ -2395,6 +2083,7 @@ export default function App() {
               </div>
 
               <form onSubmit={handleWithdrawFunds} className="space-y-4">
+<label className="block text-sm">Nomor rekening / e-wallet<input required minLength={5} value={withdrawDestination} onChange={e=>setWithdrawDestination(e.target.value)} className="block w-full border rounded-xl p-3 mt-2" /></label>
                 
                 {/* Balance display info */}
                 <div className="bg-blue-50 p-4 rounded-xl border border-blue-100/50 flex items-center justify-between">
@@ -2428,7 +2117,7 @@ export default function App() {
                 <div>
                   <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1.5">Pilih Rekening / Dompet Digital</label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    {['GoPay', 'OVO', 'Dana', 'Bank BCA'].map((channel) => (
+                    {['GoPay', 'OVO', 'Dana', 'BCA'].map((channel) => (
                       <button
                         type="button"
                         key={channel}
@@ -2447,7 +2136,7 @@ export default function App() {
 
                 <div className="pt-2">
                   <button 
-                    type="submit"
+                    type="submit" disabled={isSaving}
                     className="w-full bg-orange-500 hover:bg-orange-400 text-neutral-900 font-bold py-3.5 rounded-xl shadow-lg hover:shadow-orange-500/20 text-xs flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <CreditCard className="w-4 h-4" />
@@ -2551,8 +2240,7 @@ export default function App() {
                   <div>
                     <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1.5">Jadwal Sesi Kuliah</label>
                     <input 
-                      type="text" 
-                      placeholder="Sabtu, 11 Juli 2026 pukul 19:00 WIB" 
+                      type="datetime-local"
                       value={newClassDateTime}
                       onChange={(e) => setNewClassDateTime(e.target.value)}
                       className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white text-gray-800"
@@ -2602,7 +2290,7 @@ export default function App() {
                     Batal
                   </button>
                   <button 
-                    type="submit"
+                    type="submit" disabled={isSaving}
                     className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl text-xs shadow-md transition-colors cursor-pointer"
                   >
                     Publikasikan Kelas Patungan
@@ -2650,19 +2338,15 @@ export default function App() {
               <div className="flex flex-col items-center py-4 space-y-4">
                 {/* QR Code image */}
                 <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 shadow-inner flex items-center justify-center">
-                  <img 
-                    src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=DummyQRIS" 
-                    alt="QRIS Code" 
-                    className="w-48 h-48 rounded-lg object-contain"
-                  />
+                  <p className="text-sm text-gray-600 p-6">Pembayaran QRIS belum diaktifkan. Daftarkan kelas untuk mencatat permintaan pembayaran.</p>
                 </div>
                 
                 <div className="space-y-1.5">
                   <p className="text-sm font-semibold text-gray-700">
-                    Scan QRIS ini untuk membayar <span className="text-orange-700 font-extrabold text-lg">Rp 5.000</span>
+                    Biaya kelas <span className="text-orange-700 font-extrabold text-lg">Rp 5.000</span>
                   </p>
                   <p className="text-xs text-gray-400 max-w-xs mx-auto">
-                    Bisa scan menggunakan GoPay, OVO, Dana, LinkAja, BCA Mobile, atau aplikasi M-Banking lainnya.
+                    Pembayaran akan diverifikasi oleh pengelola sebelum akses kelas diberikan.
                   </p>
                 </div>
               </div>
@@ -2681,7 +2365,7 @@ export default function App() {
                   onClick={handleConfirmPayment}
                   className="flex-1 bg-orange-500 hover:bg-orange-400 text-neutral-900 font-bold py-3 rounded-xl text-xs shadow-md transition-all cursor-pointer hover:shadow-orange-500/20"
                 >
-                  Konfirmasi Pembayaran
+                  Simpan Pendaftaran
                 </button>
               </div>
             </motion.div>

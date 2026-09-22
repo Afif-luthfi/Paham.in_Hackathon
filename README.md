@@ -18,3 +18,7 @@ View your app in AI Studio: https://ai.studio/apps/2bb963dd-0798-4a85-a83d-96c0d
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Database Supabase
+
+Aplikasi memakai Supabase Auth, PostgreSQL, RLS, dan Storage. Konfigurasi dan alur pengelolaan tersedia di [supabase/README.md](supabase/README.md). Gunakan `.env.example` untuk variabel koneksi publik.
